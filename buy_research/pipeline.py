@@ -1,30 +1,58 @@
 """오케스트레이터: 후보 발굴 → 사이트별 에이전트 병렬 조사 → 비교표 종합."""
 
 import asyncio
+from dataclasses import dataclass
 from pathlib import Path
 
 import anthropic
 
 from . import prompts
-from .agents import parse_structured, run_research_agent
+from .agents import BudgetExceeded, CostTracker, parse_structured, run_research_agent
 from .config import make_client
 from .models import CandidateList, ComparisonReport
+
+
+@dataclass(frozen=True)
+class Models:
+    research: str  # 웹을 읽는 에이전트 (토큰을 가장 많이 씀)
+    synthesis: str  # 메모 정리·비교표 작성
+
+
+ECONOMY = Models(research="claude-haiku-5-5", synthesis="claude-sonnet-5-5")
+DEEP = Models(research="claude-sonnet-5-5", synthesis="claude-opus-5-5")
 
 
 def _log(msg: str) -> None:
     print(f"[buy-research] {msg}", flush=True)
 
 
-async def research(query: str, max_price: int | None = None, notes_path: Path | None = None) -> ComparisonReport:
+async def research(
+    query: str,
+    tracker: CostTracker,
+    *,
+    max_price: int | None = None,
+    models: Models = ECONOMY,
+    max_searches: int = 5,
+    notes_path: Path | None = None,
+) -> ComparisonReport:
     client = make_client()
 
     # 1) 플래너: 조건에 맞는 후보 제품과 구매 링크
-    _log("플래너 에이전트: 후보 제품 탐색 중")
+    _log(f"플래너 에이전트: 후보 제품 탐색 중 ({models.research})")
     planner_notes = await run_research_agent(
-        client, system=prompts.PLANNER, task=prompts.planner_task(query, max_price)
+        client,
+        tracker,
+        agent="planner",
+        model=models.research,
+        system=prompts.PLANNER,
+        task=prompts.planner_task(query, max_price),
+        max_uses=max_searches,
     )
     candidates = await parse_structured(
         client,
+        tracker,
+        agent="planner",
+        model=models.synthesis,
         instruction="다음 조사 메모에서 후보 제품 목록을 추출하세요.",
         material=planner_notes,
         schema=CandidateList,
@@ -36,7 +64,7 @@ async def research(query: str, max_price: int | None = None, notes_path: Path | 
     candidates_text = "\n".join(
         f"- {c.name} ({c.variant}) {c.price_krw:,}원 | {c.key_specs} | {c.buy_url}" for c in candidates.candidates
     )
-    _log(f"후보 {len(candidates.candidates)}개:\n{candidates_text}")
+    _log(f"후보 {len(candidates.candidates)}개 (지금까지 ${tracker.spent_usd:.2f}):\n{candidates_text}")
 
     # 2) 사이트별 에이전트를 병렬로 실행 (각자 자기 도메인만 검색)
     _log("클리앙·뽐뿌·다나와 에이전트 병렬 실행 중")
@@ -45,11 +73,15 @@ async def research(query: str, max_price: int | None = None, notes_path: Path | 
         *(
             run_research_agent(
                 client,
+                tracker,
+                agent=site,
+                model=models.research,
                 system=prompts.COMMON + "\n\n" + role,
                 task=prompts.site_task(query, candidates_text),
                 allowed_domains=domains,
+                max_uses=max_searches,
             )
-            for domains, role in prompts.SITE_ROLES.values()
+            for site, (domains, role) in prompts.SITE_ROLES.items()
         ),
         return_exceptions=True,
     )
@@ -69,16 +101,30 @@ async def research(query: str, max_price: int | None = None, notes_path: Path | 
         notes_path.write_text(material, encoding="utf-8")
         _log(f"조사 메모 저장: {notes_path}")
 
-    # 결제·인증 오류는 다시 시도해도 실패하므로 종합 단계로 넘어가지 않음
-    fatal = next((r for r in results if isinstance(r, (anthropic.AuthenticationError, anthropic.PermissionDeniedError))
-                  or (isinstance(r, anthropic.BadRequestError) and "credit balance" in str(r))), None)
+    # 결제·인증 오류와 비용 상한 초과는 종합 단계로 넘어가지 않음
+    fatal = next(
+        (
+            r
+            for r in results
+            if isinstance(r, (anthropic.AuthenticationError, anthropic.PermissionDeniedError, BudgetExceeded))
+            or (isinstance(r, anthropic.BadRequestError) and "credit balance" in str(r))
+        ),
+        None,
+    )
     if fatal:
         raise fatal
 
     # 3) 종합: 구조화된 비교표
-    _log("종합 에이전트: 비교표 작성 중")
+    _log(f"종합 에이전트: 비교표 작성 중 ({models.synthesis})")
     report = await parse_structured(
-        client, instruction=prompts.SYNTHESIZER, material=material, schema=ComparisonReport, effort="high"
+        client,
+        tracker,
+        agent="synthesizer",
+        model=models.synthesis,
+        instruction=prompts.SYNTHESIZER,
+        material=material,
+        schema=ComparisonReport,
+        effort="medium",
     )
     report.rows.sort(key=lambda r: r.fit_score, reverse=True)
     return report

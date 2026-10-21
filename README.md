@@ -34,8 +34,18 @@ pip install -r requirements.txt
 echo "BUY_RESEARCH_API_KEY=sk-ant-..." > .env
 
 python -m buy_research "이케아 겨울 이불" --max-price 100000
-python -m buy_research "로봇청소기 물걸레" --max-price 600000 --out out
+python -m buy_research "로봇청소기 물걸레" --max-price 600000 --budget 0.5
 ```
+
+### 비용 조절
+
+| 옵션 | 기본값 | 설명 |
+|---|---|---|
+| `--budget` | 1.0 | 이번 실행의 API 비용 상한(달러). 넘으면 멈추고, 그때까지의 조사 메모는 `out/`에 남음 |
+| `--max-searches` | 5 | 에이전트 하나당 웹 검색 최대 횟수 |
+| `--deep` | 꺼짐 | 웹 조사를 Sonnet 5.5, 정리를 Opus 5.5로 실행 (기본은 Haiku 5.5 + Sonnet 5.5). 훨씬 비쌈 |
+
+실행이 끝나면 `예상 API 비용: $0.xx (에이전트별)`을 출력합니다. 정확한 청구액은 Claude Console에서 확인하세요.
 
 ## 파일
 
