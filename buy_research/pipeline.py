@@ -1,6 +1,9 @@
 """오케스트레이터: 후보 발굴 → 사이트별 에이전트 병렬 조사 → 비교표 종합."""
 
 import asyncio
+from pathlib import Path
+
+import anthropic
 
 from . import prompts
 from .agents import parse_structured, run_research_agent
@@ -12,7 +15,7 @@ def _log(msg: str) -> None:
     print(f"[buy-research] {msg}", flush=True)
 
 
-async def research(query: str, max_price: int | None = None) -> ComparisonReport:
+async def research(query: str, max_price: int | None = None, notes_path: Path | None = None) -> ComparisonReport:
     client = make_client()
 
     # 1) 플래너: 조건에 맞는 후보 제품과 구매 링크
@@ -57,11 +60,23 @@ async def research(query: str, max_price: int | None = None) -> ComparisonReport
             result = f"(조사 실패: {result})"
         site_notes.append(f"## {site}\n{result}")
 
-    # 3) 종합: 구조화된 비교표
-    _log("종합 에이전트: 비교표 작성 중")
     material = f"사용자 요구: {query} / 예산: {max_price or '제한 없음'}\n\n# 후보\n{candidates_text}\n\n" + "\n\n".join(
         site_notes
     )
+    # 비용을 들여 모은 조사 메모는 종합 단계가 실패해도 남도록 먼저 저장
+    if notes_path:
+        notes_path.parent.mkdir(parents=True, exist_ok=True)
+        notes_path.write_text(material, encoding="utf-8")
+        _log(f"조사 메모 저장: {notes_path}")
+
+    # 결제·인증 오류는 다시 시도해도 실패하므로 종합 단계로 넘어가지 않음
+    fatal = next((r for r in results if isinstance(r, (anthropic.AuthenticationError, anthropic.PermissionDeniedError))
+                  or (isinstance(r, anthropic.BadRequestError) and "credit balance" in str(r))), None)
+    if fatal:
+        raise fatal
+
+    # 3) 종합: 구조화된 비교표
+    _log("종합 에이전트: 비교표 작성 중")
     report = await parse_structured(
         client, instruction=prompts.SYNTHESIZER, material=material, schema=ComparisonReport, effort="high"
     )
