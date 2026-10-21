@@ -30,7 +30,8 @@
 
 ```bash
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY=...        # 또는 `ant auth login`
+# API 키: 프로젝트 폴더에 .env 파일을 만들고 한 줄만 적으면 자동으로 읽음 (.env는 GitHub에 올라가지 않음)
+echo "BUY_RESEARCH_API_KEY=sk-ant-..." > .env
 
 python -m buy_research "이케아 겨울 이불" --max-price 100000
 python -m buy_research "로봇청소기 물걸레" --max-price 600000 --out out

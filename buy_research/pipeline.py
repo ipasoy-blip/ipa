@@ -2,10 +2,9 @@
 
 import asyncio
 
-import anthropic
-
 from . import prompts
 from .agents import parse_structured, run_research_agent
+from .config import make_client
 from .models import CandidateList, ComparisonReport
 
 
@@ -14,7 +13,7 @@ def _log(msg: str) -> None:
 
 
 async def research(query: str, max_price: int | None = None) -> ComparisonReport:
-    client = anthropic.AsyncAnthropic()
+    client = make_client()
 
     # 1) 플래너: 조건에 맞는 후보 제품과 구매 링크
     _log("플래너 에이전트: 후보 제품 탐색 중")
